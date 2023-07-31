@@ -61,6 +61,40 @@ $ redis-cli GET message
 
 --------------------------------------------------------------------------------
 
+```pycon
+>>> import redis
+>>> r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+>>> r.ping()
+True
+```
+
+```pycon
+>>> r.ping()
+Traceback (most recent call last):
+...
+redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused.
+```
+
+```pycon
+>>> try:
+...     r.ping()
+... except redis.ConnectionError as e:
+...     print(e)
+...
+Error 111 connecting to localhost:6379. Connection refused.
+```
+
+```pycon
+>>> r.set("message", "Hello world!")
+True
+>>> r.get("message")
+'Hello world!'
+```
+
+Start Redis in Python
+--------------------------------------------------------------------------------
+
+
 ```bash session
 $ conda install -c conda-forge plumbum psutil
 ```
@@ -80,21 +114,7 @@ $ conda install -c conda-forge plumbum psutil
 {'name': 'redis-server', 'status': 'sleeping', 'pid': 65063}
 ```
 
-```pycon
->>> import redis
->>> r = redis.Redis(host="localhost", port=6379, decode_responses=True)
->>> r.ping()
-True
-```
-
-
-
-```pycon
->>> r.set("message", "Hello world!")
-True
->>> r.get("message")
-'Hello world!'
-```
+**TODO.** multiprocessing, subprocess. Arf, no, multiprocessin won't work here.
 
 Channels
 --------------------------------------------------------------------------------
