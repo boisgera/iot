@@ -82,8 +82,14 @@ $ conda install -c conda-forge plumbum psutil
 
 ```pycon
 >>> import redis
+>>> r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 >>> r.ping()
 True
+```
+
+
+
+```pycon
 >>> r.set("message", "Hello world!")
 True
 >>> r.get("message")
