@@ -2,8 +2,13 @@ Redis
 ================================================================================
 
 ```bash session
-$ pip install redis
+$ conda create --name redis
+...
+$ conda activate redis
+$ conda install redis python redis-py
+...
 ```
+
 
 ```bash session
 $ redis-server
@@ -34,14 +39,60 @@ $ redis-server
 60817:M 31 Jul 2023 15:33:14.700 * Ready to accept connections
 ```
 
-``` bash session
+```bash session
 $ ps aux | grep redis-server
 boisgera   60817  0.1  0.0  46388  5204 pts/0    Sl+  15:33   0:00 redis-server *:6379
 ```
 
 ```bash session
+$ redis-cli PING
+PONG
+```
+
+```bash session
 $ redis-cli SET message "Hello world!" 
 OK
+```
+
+```bash session
 $ redis-cli GET message
 "Hello world!"
 ```
+
+--------------------------------------------------------------------------------
+
+```bash session
+$ conda install -c conda-forge plumbum psutil
+```
+
+```pycon
+>>> from plumbum import local, BG
+>>> import psutil
+>>> redis_server = local["redis_server"]
+>>> redis_server & BG
+<Future ... (running)>
+```
+``` pycon
+>>> procs_info = [p.info for p in psutil.process_iter(attrs=["name", "pid", "status"]) if p.info["name"] == "redis-server"]
+>>> assert len(procs_info) == 1
+>>> redis_server_info = procs_info[0]
+>>> redis_server_info
+{'name': 'redis-server', 'status': 'sleeping', 'pid': 65063}
+```
+
+```pycon
+>>> import redis
+>>> r.ping()
+True
+>>> r.set("message", "Hello world!")
+True
+>>> r.get("message")
+'Hello world!'
+```
+
+Channels
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+
+**TODO:** allow remote access with `bind 0.0.0.0` in conf file.
