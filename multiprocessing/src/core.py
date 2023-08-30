@@ -2,6 +2,13 @@ import multiprocessing as mp
 
 # TODO: wrap_t this stuff?
 
+# TODO:
+#  - make notes / examples about closures that won't work,
+#    bound methods that won't work, etc. with processes
+#  - explain the consequences of reimport of the functions.
+#  - make notes about the pickling stuff that takes place
+#    and maybe some examples of what can be pickled and what can't.
+
 def _a_target(f, args, kwargs, queue):
     queue.put(f(*args, **kwargs))
 
@@ -60,5 +67,10 @@ def better_compute_pi(n, post=float):
 
 # TODO:
 #   - ressource analysis at each step (here: memory & cpu)
+#   - make a simple process-based ressource logger?
 #   - other "classic" concurrent & distributed schemes.
 #   - abstract some remote stuff from multiprocessing (urk, probably not)
+
+# TODO:
+#   - Actors (ie "subject") aka long-running processes you discuss with.
+#   - Use proxy / rpc-like approach (abstraction on top of queues?)
