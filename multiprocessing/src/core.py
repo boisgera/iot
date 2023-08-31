@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import os
 
 # TODO: wrap_t this stuff?
 
@@ -18,29 +19,93 @@ import multiprocessing as mp
 # TODO: make asyncified functions automatically (lazily) support promises?
 #       So that the composition of async function can be "normal"-ish.
 
-def _a_target(f, args, kwargs, queue):
-    queue.put(f(*args, **kwargs))
+# Picklable & Parallelizable Iterator Helpers
+class StepIterator:
+    def __init__(self, it, step, offset):
+        # For multiple step iterators to work **in the same process**
+        # the iterable must be re-iterable (e.g. range(n) is).
+        # But the step iterator itself is not. (It should be though ...)
+        self.it = it
+        self.iterator = iter(it) 
+        # print("*", list(iter(it)))
+        self.step = step
+        self.offset = offset
+        self.counter = 0
+    def __repr__(self):
+        return f"StepIterator({self.it}, step={self.step}, offset={self.offset})"
+    def __iter__(self):
+        return self
+    def __next__(self):
+        while self.counter % self.step != self.offset:
+            self.counter += 1
+            next(self.iterator)
+        self.counter += 1
+        return next(self.iterator)
 
-def asyncify(f):
-    def wrapper_f(*args, **kwargs):
+def split_iterator(it, n=2):
+    return [StepIterator(it, step=n, offset=i) for i in range(n)]
+
+# Asyncify
+# ------------------------------------------------------------------------------
+class Promise:
+    def __init__(self, queue):
+        self._queue = queue
+    def __call__(self):
+        try:
+            return self._value
+        except AttributeError:
+            self._value = self._queue.get()
+            return self()
+
+def return_in_queue(f, args, kwargs, queue):
+    value = f(*args, **kwargs)
+    queue.put(value)
+
+class asyncify:
+    def __init__(self, f):
+        self._f = f
+    def __call__(self, *args, **kwargs):
         queue = mp.Queue()
-        p = mp.Process(target=_a_target, args=(f, args, kwargs, queue))
-        p.start()
-        return queue
-    return wrapper_f
+        target_args = (self._f, args, kwargs, queue)
+        process = mp.Process(target=return_in_queue, args=target_args)
+        process.start()
+        return Promise(queue)
 
-# "grok_promises" is a better name than "unwrap" or "unwrap_promises"
-# We could call that "strict"? "auto_get"? "auto_unwrap"? "auto_unpromise"?
+# Compute Pi
+# ------------------------------------------------------------------------------
 
-# TODO: compute_pi by Bellard
-
-from fractions import Fraction as F 
+from fractions import Fraction
 
 ### Ah that's nicely parallelizable :)
 def compute_pi(n):
-    return float(4 * sum(F((-1)**k, 2*k+1) for k in range(n)))
+    return 4 * sum(Fraction((-1)**k, 2*k+1) for k in range(n))
 
+### Prepare compute_pi first: generalize to accept iterators
+def compute_pi(n):
+    if isinstance(n, int):
+        it = range(n)
+    else:
+        it = n
+    return 4 * sum(Fraction((-1)**k, 2*k+1) for k in it)
 
+def compute_pi(n, parallel=False):
+    if isinstance(n, int):
+        it = range(n)
+    else:
+        it = n
+    if not parallel:
+        return 4 * sum(Fraction((-1)**k, 2*k+1) for k in it)
+    if parallel is True:
+        parallel = os.cpu_count()
+    else:
+        parallel = int(parallel)
+
+    iterators = split_iterator(it, parallel)
+    partials = [asyncify(compute_pi)(it, parallel=False) for it in iterators]
+    return sum(partial() for partial in partials)
+
+# Crypto
+# ------------------------------------------------------------------------------
 import numpy as np
 import hashlib
 
@@ -70,29 +135,6 @@ def grok_promises(f):
 def lazy(f):
     return asyncify(grok_promises(f))
 
-def compute_pi(n, post=float):
-    if not isinstance(n, range):
-        n = range(n)
-    r = n
-    return post(4 * sum(F((-1)**k, 2*k+1) for k in r))
-
-# TODO: 
-#   - make that work with range
-#   - UPDATE: "better" (?), make a split iterator function?
-#     That would be general, but we would have to intertween
-#     the values and there may be an associated cost.
-#     Mmmm and can we do this without closures?
-#     Try itertools.tee and see if it works! (Nah, it won't)
-#   - support number of nodes
-#   - make the map-reduce scheme obvious
-
-def better_compute_pi(n, post=float):
-    # Shit, we need to support range :(. OK, learn to split a range, that's fine
-    r_len = n // 8
-    ranges = [range(i*r_len, (i+1)*r_len) for i in range(7)]
-    ranges.append(range(7*r_len, n))
-    partials = [asyncify(compute_pi)(r, post=lambda x:x) for r in ranges]
-    return post(sum(partial.get() for partial in partials))
 
 # TODO:
 #   - ressource analysis at each step (here: memory & cpu)
