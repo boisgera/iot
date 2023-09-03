@@ -1,5 +1,6 @@
 import multiprocessing as mp
 import os
+from typing import Any
 
 # TODO: wrap_t this stuff?
 
@@ -103,6 +104,40 @@ def compute_pi(n, parallel=False):
     iterators = split_iterator(it, parallel)
     partials = [asyncify(compute_pi)(it, parallel=False) for it in iterators]
     return sum(partial() for partial in partials)
+
+# Actors
+# ------------------------------------------------------------------------------
+def actor(cls, args, kwargs, queue):
+    self = cls(*args, **kwargs)
+    while True:
+        method_name, args, kwargs, answer_queue = queue.get()
+        answer = getattr(self, method_name)(*args, **kwargs)
+        answer_queue.put(answer)
+
+class Method:
+    def __init__(self, name, proxy):
+        self._name = name
+        self._proxy = proxy
+    def __call__(self, *args, **kwargs):
+        return self._proxy._call_method((self._name, args, kwargs))
+    
+class Proxy:
+    def __init__(self, cls):
+        self._cls = cls
+    def __call__(self, *args, **kwargs):
+        self._queue = mp.Queue()
+        mp.Process(target=actor, args=(self._cls, args, kwargs, self._queue)).start()
+        return self
+    def __getattr__(self, name):
+        return Method(name, self)
+    def _call_method(self, name, args, kwargs):
+        queue = mp.Queue()
+        self._queue.put((name, args, kwargs, queue))
+        return Promise(queue)
+        
+def actorify(cls):
+
+    return Proxy(cls) # Mmm this need to be a class. Mmmm.
 
 # Crypto
 # ------------------------------------------------------------------------------
