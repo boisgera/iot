@@ -2,6 +2,7 @@ import multiprocessing as mp
 import os
 from typing import Any
 
+
 # TODO: single function/decorator that can be used on functions and classes?
 #       "processify"? "workerify"? "actorify"? "parallelize"? "asyncify"?
 
@@ -23,6 +24,7 @@ from typing import Any
 # TODO: make asyncified functions automatically (lazily) support promises?
 #       So that the composition of async function can be "normal"-ish.
 
+
 # Picklable & Parallelizable Iterator Helpers
 class StepIterator:
     def __init__(self, it, step, offset):
@@ -30,15 +32,18 @@ class StepIterator:
         # the iterable must be re-iterable (e.g. range(n) is).
         # But the step iterator itself is not. (It should be though ...)
         self.it = it
-        self.iterator = iter(it) 
+        self.iterator = iter(it)
         # print("*", list(iter(it)))
         self.step = step
         self.offset = offset
         self.counter = 0
+
     def __repr__(self):
         return f"StepIterator({self.it}, step={self.step}, offset={self.offset})"
+
     def __iter__(self):
         return self
+
     def __next__(self):
         while self.counter % self.step != self.offset:
             self.counter += 1
@@ -46,8 +51,10 @@ class StepIterator:
         self.counter += 1
         return next(self.iterator)
 
+
 def split_iterator(it, n=2):
     return [StepIterator(it, step=n, offset=i) for i in range(n)]
+
 
 # Asyncify
 # ------------------------------------------------------------------------------
@@ -56,6 +63,7 @@ class Promise:
         if queue is None:
             queue = mp.Queue()
         self._queue = queue
+
     def __call__(self):
         try:
             return self._value
@@ -63,13 +71,16 @@ class Promise:
             self._value = self._queue.get()
             return self()
 
+
 def return_in_queue(f, args, kwargs, queue):
     value = f(*args, **kwargs)
     queue.put(value)
 
+
 class asyncify:
     def __init__(self, f):
         self._f = f
+
     def __call__(self, *args, **kwargs):
         queue = mp.Queue()
         target_args = (self._f, args, kwargs, queue)
@@ -77,14 +88,17 @@ class asyncify:
         process.start()
         return Promise(queue)
 
+
 # Compute Pi
 # ------------------------------------------------------------------------------
 
 from fractions import Fraction
 
+
 ### Ah that's slow but nicely parallelizable :)
 def compute_pi(n):
-    return 4 * sum(Fraction((-1)**k, 2*k+1) for k in range(n))
+    return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in range(n))
+
 
 ### Prepare compute_pi first: generalize to accept iterators
 def compute_pi(n):
@@ -92,7 +106,8 @@ def compute_pi(n):
         it = range(n)
     else:
         it = n
-    return 4 * sum(Fraction((-1)**k, 2*k+1) for k in it)
+    return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in it)
+
 
 def compute_pi(n, parallel=False):
     if isinstance(n, int):
@@ -100,7 +115,7 @@ def compute_pi(n, parallel=False):
     else:
         it = n
     if not parallel:
-        return 4 * sum(Fraction((-1)**k, 2*k+1) for k in it)
+        return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in it)
     if parallel is True:
         parallel = os.cpu_count()
     else:
@@ -109,6 +124,7 @@ def compute_pi(n, parallel=False):
     iterators = split_iterator(it, parallel)
     partials = [asyncify(compute_pi)(it, parallel=False) for it in iterators]
     return sum(partial() for partial in partials)
+
 
 # Actors
 # ------------------------------------------------------------------------------
@@ -119,35 +135,43 @@ def actor(cls, args, kwargs, queue):
         answer = getattr(self, method_name)(*args, **kwargs)
         answer_queue.put(answer)
 
+
 class Method:
     def __init__(self, name, proxy):
         self._name = name
         self._proxy = proxy
+
     def __call__(self, *args, **kwargs):
         return self._proxy._call_method((self._name, args, kwargs))
-    
+
+
 class Proxy:
     def __init__(self, cls):
         self._cls = cls
+
     def __call__(self, *args, **kwargs):
         self._queue = mp.Queue()
         mp.Process(target=actor, args=(self._cls, args, kwargs, self._queue)).start()
         return self
+
     def __getattr__(self, name):
         return Method(name, self)
+
     def _call_method(self, name, args, kwargs):
         queue = mp.Queue()
         self._queue.put((name, args, kwargs, queue))
         return Promise(queue)
-        
-def actorify(cls):
 
-    return Proxy(cls) # Mmm this need to be a class. Mmmm.
+
+def actorify(cls):
+    return Proxy(cls)  # Mmm this need to be a class. Mmmm.
+
 
 # Crypto
 # ------------------------------------------------------------------------------
 import numpy as np
 import hashlib
+
 
 def proof_of_work(data, level=1):
     # A 2**64 space is plenty; in any case, we'll never get to the end
@@ -157,15 +181,18 @@ def proof_of_work(data, level=1):
         if check_proof_of_work(data, key, level):
             return key
 
+
 def check_proof_of_work(data, key, level=1):
     digest = hashlib.sha256(data + key).digest()
     return digest.startswith(b"\x00" * level)
+
 
 # TODO: first of Promises that yields. Complicated because of our API choice :(
 # AFAICT, we need to dwelve back into the Process API, we can't just use our
 # abstraction. Or maybe it's simpler with the Actor paradgim(?)
 
-# NOTA: in this scheme, we are not CANCELLING the other processes ; 
+
+# NOTA: in this scheme, we are not CANCELLING the other processes ;
 #       They are still running in the background until completion.
 # Conclusion: the "run all" stuff can be nicely abstracted on top of
 # the "asyncify" decorator. But the "yield first" not so much unless
@@ -182,20 +209,26 @@ def check_proof_of_work(data, key, level=1):
 # on top of that. BUT, if the process killed had subprocesses, then what's
 # going on? Unless it explicity handles "kill" (HUP?) signals, it will
 # just die and leave the subprocesses running ...
-def return_in_queue(promise, queue):
-    queue.put(promise())
+# def return_in_queue(promise, queue):
+#     queue.put(promise())
 
-def yield_first(promises):
-    queue = mp.Queue()
-    for promise in promises:
-        mp.Process(target=return_in_queue, args=(promise, queue)).start()
-    return Promise(queue)
 
-def proof_of_work(data, level=1, it=None, parallel=False):
-    if it is None:
-        it = range(2**64)
+# def yield_first(promises):
+#     queue = mp.Queue()
+#     for promise in promises:
+#         mp.Process(target=return_in_queue, args=(promise, queue)).start()
+#     return Promise(queue)
+
+
+# TODO: split_range would be nice here (with many options of course)
+
+# Simple version of parallel proof of work that goes around the limitations
+# of the current design. It's not very nice, but it works.
+def proof_of_work(data, level=1, parallel=False, _range=None):
+    if _range is None:
+        _range = range(2**64)
     if not parallel:
-        for i in it:
+        for i in _range:
             key = np.uint64(i).tobytes()
             if check_proof_of_work(data, key, level):
                 return key
@@ -207,25 +240,40 @@ def proof_of_work(data, level=1, it=None, parallel=False):
     else:
         parallel = int(parallel)
 
-    it = range(2**64)
-    iterators = split_iterator(it, parallel)
-    # Need to start the processes and check for the first that returns AND
-    # for which the return value is not None. Arf, so we need a select-like
-    # construct. This is "our fault" since our asyncify generates a Promise
-    # for each function.
+    N = 2**20
+    assert _range == range(2**64)
+    workers = []
+    current_range = range(0)
+    while True:
+        while len(workers) < parallel:
+            start = current_range.stop
+            stop = start + N
+            current_range = range(start, stop)
+            workers.append(
+                asyncify(proof_of_work)(
+                    data, level, parallel=False, _range=current_range
+                )
+            )
+        if (key := workers.pop(0)()) != None:
+            return key
+
 
 # TODO: parallelize that
 
 # ------------------------------------------------------------------------------
+
 
 def grok_promises(f):
     def lazy_f(*args, **kwargs):
         args = [arg.get() if hasattr(arg, "get") else arg for arg in args]
         kwargs = {k: v.get() if hasattr(v, "get") else v for k, v in kwargs.items()}
         return f(*args, **kwargs)
+
     return lazy_f
 
+
 # Now, we can make some stuff "lazy"
+
 
 def lazy(f):
     return asyncify(grok_promises(f))
@@ -240,3 +288,35 @@ def lazy(f):
 # TODO:
 #   - Actors (ie "subject") aka long-running processes you discuss with.
 #   - Use proxy / rpc-like approach (abstraction on top of queues?)
+
+# ------------------------------------------------------------------------------
+# TODO: 
+#   - asyncify & error management: by default the exception is "raised" "asap"
+#     and by that I mean that the error will be printed on stderr and that's it.
+#     There is no way to catch it, etc.
+#   - tracking of PID in promises
+
+import time
+
+def raise_error(delay=0.0):
+    time.sleep(delay)
+    raise ValueError("This is an error")
+
+
+# TODO: manage exception here. But where to put it? Mmmm we need to also
+#       have some support in Promise to do the job here.
+def return_in_queue(f, args, kwargs, queue):
+    value = f(*args, **kwargs)
+    queue.put(value)
+
+class asyncify:
+    def __init__(self, f):
+        self._f = f
+
+    def __call__(self, *args, **kwargs):
+        queue = mp.Queue()
+        target_args = (self._f, args, kwargs, queue)
+        process = mp.Process(target=return_in_queue, args=target_args)
+        process.start()
+        return Promise(queue)
+
