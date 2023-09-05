@@ -2,6 +2,9 @@ import multiprocessing as mp
 import os
 from typing import Any
 
+# TODO: single function/decorator that can be used on functions and classes?
+#       "processify"? "workerify"? "actorify"? "parallelize"? "asyncify"?
+
 # TODO: wrap_t this stuff?
 
 # TODO:
@@ -49,7 +52,9 @@ def split_iterator(it, n=2):
 # Asyncify
 # ------------------------------------------------------------------------------
 class Promise:
-    def __init__(self, queue):
+    def __init__(self, queue=None):
+        if queue is None:
+            queue = mp.Queue()
         self._queue = queue
     def __call__(self):
         try:
@@ -77,7 +82,7 @@ class asyncify:
 
 from fractions import Fraction
 
-### Ah that's nicely parallelizable :)
+### Ah that's slow but nicely parallelizable :)
 def compute_pi(n):
     return 4 * sum(Fraction((-1)**k, 2*k+1) for k in range(n))
 
@@ -144,19 +149,74 @@ def actorify(cls):
 import numpy as np
 import hashlib
 
-def proof_of_work(data, level=1, verbose=False):
-    for i in range(2**64 - 1):
+def proof_of_work(data, level=1):
+    # A 2**64 space is plenty; in any case, we'll never get to the end
+    # since even an empty loop over that many values takes centuries.
+    for i in range(2**64):
         key = np.uint64(i).tobytes()
-        if check_proof_of_work(data, key, level, verbose):
+        if check_proof_of_work(data, key, level):
             return key
 
-def check_proof_of_work(data, key, level=1, verbose=False):
+def check_proof_of_work(data, key, level=1):
     digest = hashlib.sha256(data + key).digest()
-    if verbose:
-        print(digest)
     return digest.startswith(b"\x00" * level)
 
+# TODO: first of Promises that yields. Complicated because of our API choice :(
+# AFAICT, we need to dwelve back into the Process API, we can't just use our
+# abstraction. Or maybe it's simpler with the Actor paradgim(?)
+
+# NOTA: in this scheme, we are not CANCELLING the other processes ; 
+#       They are still running in the background until completion.
+# Conclusion: the "run all" stuff can be nicely abstracted on top of
+# the "asyncify" decorator. But the "yield first" not so much unless
+# we tweak the design, with shared return value and cancellation.
+#
+# Add a common "promise" target is easy in the current design,
+# but the cancellation is not. And if the return value is a common
+# promise, and not individual promises, then the problem is even
+# more severe, since we cannot pass let's say process ids to get
+# tasks killed. OTHERWISE, it would be a good idea to have a promise
+# carry a "kill" switch ("renounce"? "relnquish"? "give_up"?).
+#
+# Yeah, maybe we should have that to start with. And then make a select
+# on top of that. BUT, if the process killed had subprocesses, then what's
+# going on? Unless it explicity handles "kill" (HUP?) signals, it will
+# just die and leave the subprocesses running ...
+def return_in_queue(promise, queue):
+    queue.put(promise())
+
+def yield_first(promises):
+    queue = mp.Queue()
+    for promise in promises:
+        mp.Process(target=return_in_queue, args=(promise, queue)).start()
+    return Promise(queue)
+
+def proof_of_work(data, level=1, it=None, parallel=False):
+    if it is None:
+        it = range(2**64)
+    if not parallel:
+        for i in it:
+            key = np.uint64(i).tobytes()
+            if check_proof_of_work(data, key, level):
+                return key
+        else:
+            return None
+
+    if parallel is True:
+        parallel = os.cpu_count()
+    else:
+        parallel = int(parallel)
+
+    it = range(2**64)
+    iterators = split_iterator(it, parallel)
+    # Need to start the processes and check for the first that returns AND
+    # for which the return value is not None. Arf, so we need a select-like
+    # construct. This is "our fault" since our asyncify generates a Promise
+    # for each function.
+
 # TODO: parallelize that
+
+# ------------------------------------------------------------------------------
 
 def grok_promises(f):
     def lazy_f(*args, **kwargs):
