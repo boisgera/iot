@@ -1,10 +1,66 @@
+"""
+>>> @asyncify
+... def add_one(x):
+...     return x + 1
+...
+>>> promise = add_one(2)
+>>> promise()
+3
+
+>>> promise()
+3
+
+>>> promise = add_one("Hello")
+>>> promise()
+Traceback (most recent call last):
+...
+TypeError: can only concatenate str (not "int") to str
+
+>>> import time
+>>> dt = 1e-2
+
+>>> @asyncify
+... def add_one(x):  # slow version
+...     time.sleep(1.0)
+...     return x + 1
+...
+>>> start = time.time()
+>>> promise = add_one(2)
+>>> time.time() - start <= dt
+True
+>>> promise()
+3
+>>> 1.0 <= time.time() - start <= 1.0 + dt
+True
+>>> start = time.time()
+>>> promise()
+3
+>>> time.time() - start <= dt
+True
+
+>>> @asyncify
+... def greet(name):
+...     time.sleep(1.0)
+...     open("greet.txt", "tw").write(f"Hello {name}")
+...
+>>> promise = greet("stranger!")
+>>> promise()
+>>> open("greet.txt").read()
+'Hello stranger!'
+
+>>> promise = greet("world!")
+>>> del promise  # a gc.collect() *could* be necessary here
+>>> open("greet.txt").read()
+'Hello stranger!'
+
+"""
+
+import doctest
 import multiprocessing as mp
 import os
 import signal
 
 
-# TODO: single function/decorator that can be used on functions and classes?
-#       "processify"? "workerify"? "actorify"? "parallelize"? "asyncify"?
 
 # TODO:
 #  - make notes / examples about closures that won't work,
@@ -12,17 +68,16 @@ import signal
 #  - explain the consequences of reimport of the functions.
 #  - make notes about the pickling stuff that takes place
 #    and maybe some examples of what can be pickled and what can't.
+#  - use pickletools to see what's going on in pickle files?
+#    too bad jsonpickle doesn't cut it (identity not preserved to
+#    begin with).
 
+# TODO: make asyncified functions automatically (lazily) support promises
+#       arguments ?
+#       So that the composition of async function can be "normal"-ish (?)
 # TODO: "flag" the asyncified functions with an attribute.
 #       Make an "is_async" function that checks that.
 
-# TODO: wrap a Queue into a Promise object (new class),
-#       that will make things simpler.
-
-# TODO: make asyncified functions automatically (lazily) support promises?
-#       So that the composition of async function can be "normal"-ish.
-
-# ------------------------------------------------------------------------------
 
 # Asyncify
 # ------------------------------------------------------------------------------
@@ -32,30 +87,35 @@ class Promise:
         self._process = process
 
     def __call__(self):
-        try:
-            return self._value
-        except AttributeError:
-            self._value = self._queue.get()
-            return self._value
-        
+        if hasattr(self, "_error"):
+            if self._error is not None:
+                raise self._error
+            else:
+                return self._value
+        else:
+            self._value, self._error = self._queue.get()
+            self._process.join()
+            return self()
+
     def __del__(self):
         pid = self._process.pid
         try:
             os.kill(pid, signal.SIGINT)
-        except (ProcessLookupError, KeyboardInterrupt):
+        except ProcessLookupError:
             pass
-        
 
 
-# TODO: manage other failure types: raise in original process
-# (see at the bottom of this program)
-def return_in_queue(function, args, kwargs, queue):
+def return_or_raise_in_queue(function, args, kwargs, queue):
     try:
         value = function(*args, **kwargs)
-        queue.put(value)
+        error = None
     except KeyboardInterrupt:
-        pass
-
+        value = None
+        error = None
+    except Exception as e:
+        value = None
+        error = e
+    queue.put((value, error))
 
 class asyncify:
     def __init__(self, function):
@@ -64,7 +124,7 @@ class asyncify:
     def __call__(self, *args, **kwargs):
         queue = mp.Queue()
         target_args = (self._function, args, kwargs, queue)
-        process = mp.Process(target=return_in_queue, args=target_args)
+        process = mp.Process(target=return_or_raise_in_queue, args=target_args)
         process.start()
         return Promise(queue, process)
 
@@ -103,15 +163,13 @@ def split_iterator(it, n=2):
     return [StepIterator(it, step=n, offset=i) for i in range(n)]
 
 
-
-
 # Compute Pi
 # ------------------------------------------------------------------------------
 
 from fractions import Fraction
 
 
-### Ah that's slow but nicely parallelizable :)
+### Ah that's slow but nicely parallelizable, exactly what I like :)
 def compute_pi(n):
     return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in range(n))
 
@@ -202,6 +260,11 @@ def check_proof_of_work(data, key, level=1):
     digest = hashlib.sha256(data + key).digest()
     return digest.startswith(b"\x00" * level)
 
+# TODO: get the first of promise that yields, del the others.
+#       How do we do that? We need an extra "construct" where
+#       we make everyone return in the same queue, and then
+#       get the queue. So we need to wrap every stuff in another
+#       layer of processes. This is a select-like construct IMHO.
 
 # TODO: first of Promises that yields. Complicated because of our API choice :(
 # AFAICT, we need to dwelve back into the Process API, we can't just use our
@@ -237,6 +300,7 @@ def check_proof_of_work(data, key, level=1):
 
 
 # TODO: split_range would be nice here (with many options of course)
+
 
 # Simple version of parallel proof of work that goes around the limitations
 # of the current design. It's not very nice, but it works.
@@ -305,70 +369,5 @@ def lazy(f):
 #   - Actors (ie "subject") aka long-running processes you discuss with.
 #   - Use proxy / rpc-like approach (abstraction on top of queues?)
 
-# ------------------------------------------------------------------------------
-# TODO: 
-#   - asyncify & error management: by default the exception is "raised" "asap"
-#     and by that I mean that the error will be printed on stderr and that's it.
-#     There is no way to catch it, etc.
-#   - tracking of PID in promises
-
-# import time
-
-# def raise_error(delay=0.0):
-#     time.sleep(delay)
-#     raise ValueError("This is an error")
-
-
-# # TODO: manage exception here. But where to put it? Mmmm we need to also
-# #       have some support in Promise to do the job here.
-
-# def return_or_raise_in_queue(f, args, kwargs, queue):
-#     pid = os.getpid()
-#     queue.put(pid)
-#     try:
-#         value = f(*args, **kwargs)
-#         error = None
-#     except Exception as error:
-#         value = None
-#     queue.put((value, error))
-
-# class Promise:
-#     def __init__(self, queue):
-#         self._queue = queue
-#         self._pid = None
-#         self._error = None
-#         self._value = None
-
-#     def __call__(self):
-#         if self._pid is None:
-#             self._pid = self._queue.get()
-#         try:
-#             if self._error is not None:
-#                 raise self._error
-#             else:
-#                 return self._value    
-#         except AttributeError:
-#             self._value, self._error = self._queue.get()
-#             return self()
-        
-#     def relinquish(self): # Kills the process, not recursive
-#         if self._pid is not None:
-#             os.kill(self._pid, signal.SIGTERM)
-#             # In the current archi, can the function handle the SIGTERM,
-#             # e.g. to clean-up its own subprocesses? Mmm I don't think so.
-#             # Except if we investigate stuff about process group?
-
-#     def __del__(self):
-#         self.relinquish()
-
-# class asyncify:
-#     def __init__(self, f):
-#         self._f = f
-
-#     def __call__(self, *args, **kwargs):
-#         queue = mp.Queue()
-#         target_args = (self._f, args, kwargs, queue)
-#         process = mp.Process(target=return_in_queue, args=target_args)
-#         process.start()
-#         return Promise(queue)
-
+if __name__ == "__main__":
+    doctest.testmod()
