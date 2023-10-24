@@ -1,12 +1,10 @@
 import multiprocessing as mp
 import os
-from typing import Any
+import signal
 
 
 # TODO: single function/decorator that can be used on functions and classes?
 #       "processify"? "workerify"? "actorify"? "parallelize"? "asyncify"?
-
-# TODO: wrap_t this stuff?
 
 # TODO:
 #  - make notes / examples about closures that won't work,
@@ -23,6 +21,55 @@ from typing import Any
 
 # TODO: make asyncified functions automatically (lazily) support promises?
 #       So that the composition of async function can be "normal"-ish.
+
+# ------------------------------------------------------------------------------
+
+# Asyncify
+# ------------------------------------------------------------------------------
+class Promise:
+    def __init__(self, queue, process):
+        self._queue = queue
+        self._process = process
+
+    def __call__(self):
+        try:
+            return self._value
+        except AttributeError:
+            self._value = self._queue.get()
+            return self._value
+        
+    def __del__(self):
+        pid = self._process.pid
+        try:
+            os.kill(pid, signal.SIGINT)
+        except (ProcessLookupError, KeyboardInterrupt):
+            pass
+        
+
+
+# TODO: manage other failure types: raise in original process
+# (see at the bottom of this program)
+def return_in_queue(function, args, kwargs, queue):
+    try:
+        value = function(*args, **kwargs)
+        queue.put(value)
+    except KeyboardInterrupt:
+        pass
+
+
+class asyncify:
+    def __init__(self, function):
+        self._function = function
+
+    def __call__(self, *args, **kwargs):
+        queue = mp.Queue()
+        target_args = (self._function, args, kwargs, queue)
+        process = mp.Process(target=return_in_queue, args=target_args)
+        process.start()
+        return Promise(queue, process)
+
+
+# ------------------------------------------------------------------------------
 
 
 # Picklable & Parallelizable Iterator Helpers
@@ -56,37 +103,6 @@ def split_iterator(it, n=2):
     return [StepIterator(it, step=n, offset=i) for i in range(n)]
 
 
-# Asyncify
-# ------------------------------------------------------------------------------
-class Promise:
-    def __init__(self, queue=None):
-        if queue is None:
-            queue = mp.Queue()
-        self._queue = queue
-
-    def __call__(self):
-        try:
-            return self._value
-        except AttributeError:
-            self._value = self._queue.get()
-            return self()
-
-
-def return_in_queue(f, args, kwargs, queue):
-    value = f(*args, **kwargs)
-    queue.put(value)
-
-
-class asyncify:
-    def __init__(self, f):
-        self._f = f
-
-    def __call__(self, *args, **kwargs):
-        queue = mp.Queue()
-        target_args = (self._f, args, kwargs, queue)
-        process = mp.Process(target=return_in_queue, args=target_args)
-        process.start()
-        return Promise(queue)
 
 
 # Compute Pi
@@ -296,27 +312,63 @@ def lazy(f):
 #     There is no way to catch it, etc.
 #   - tracking of PID in promises
 
-import time
+# import time
 
-def raise_error(delay=0.0):
-    time.sleep(delay)
-    raise ValueError("This is an error")
+# def raise_error(delay=0.0):
+#     time.sleep(delay)
+#     raise ValueError("This is an error")
 
 
-# TODO: manage exception here. But where to put it? Mmmm we need to also
-#       have some support in Promise to do the job here.
-def return_in_queue(f, args, kwargs, queue):
-    value = f(*args, **kwargs)
-    queue.put(value)
+# # TODO: manage exception here. But where to put it? Mmmm we need to also
+# #       have some support in Promise to do the job here.
 
-class asyncify:
-    def __init__(self, f):
-        self._f = f
+# def return_or_raise_in_queue(f, args, kwargs, queue):
+#     pid = os.getpid()
+#     queue.put(pid)
+#     try:
+#         value = f(*args, **kwargs)
+#         error = None
+#     except Exception as error:
+#         value = None
+#     queue.put((value, error))
 
-    def __call__(self, *args, **kwargs):
-        queue = mp.Queue()
-        target_args = (self._f, args, kwargs, queue)
-        process = mp.Process(target=return_in_queue, args=target_args)
-        process.start()
-        return Promise(queue)
+# class Promise:
+#     def __init__(self, queue):
+#         self._queue = queue
+#         self._pid = None
+#         self._error = None
+#         self._value = None
+
+#     def __call__(self):
+#         if self._pid is None:
+#             self._pid = self._queue.get()
+#         try:
+#             if self._error is not None:
+#                 raise self._error
+#             else:
+#                 return self._value    
+#         except AttributeError:
+#             self._value, self._error = self._queue.get()
+#             return self()
+        
+#     def relinquish(self): # Kills the process, not recursive
+#         if self._pid is not None:
+#             os.kill(self._pid, signal.SIGTERM)
+#             # In the current archi, can the function handle the SIGTERM,
+#             # e.g. to clean-up its own subprocesses? Mmm I don't think so.
+#             # Except if we investigate stuff about process group?
+
+#     def __del__(self):
+#         self.relinquish()
+
+# class asyncify:
+#     def __init__(self, f):
+#         self._f = f
+
+#     def __call__(self, *args, **kwargs):
+#         queue = mp.Queue()
+#         target_args = (self._f, args, kwargs, queue)
+#         process = mp.Process(target=return_in_queue, args=target_args)
+#         process.start()
+#         return Promise(queue)
 
