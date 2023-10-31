@@ -1,373 +1,118 @@
-"""
->>> @asyncify
-... def add_one(x):
-...     return x + 1
-...
->>> promise = add_one(2)
->>> promise()
-3
-
->>> promise()
-3
-
->>> promise = add_one("Hello")
->>> promise()
-Traceback (most recent call last):
-...
-TypeError: can only concatenate str (not "int") to str
-
->>> import time
->>> dt = 1e-2
-
->>> @asyncify
-... def add_one(x):  # slow version
-...     time.sleep(1.0)
-...     return x + 1
-...
->>> start = time.time()
->>> promise = add_one(2)
->>> time.time() - start <= dt
-True
->>> promise()
-3
->>> 1.0 <= time.time() - start <= 1.0 + dt
-True
->>> start = time.time()
->>> promise()
-3
->>> time.time() - start <= dt
-True
-
->>> @asyncify
-... def greet(name):
-...     time.sleep(1.0)
-...     open("greet.txt", "tw").write(f"Hello {name}")
-...
->>> promise = greet("stranger!")
->>> promise()
->>> open("greet.txt").read()
-'Hello stranger!'
-
->>> promise = greet("world!")
->>> del promise  # a gc.collect() *could* be necessary here
->>> open("greet.txt").read()
-'Hello stranger!'
-
-"""
-
-import doctest
-import multiprocessing as mp
+# Python Standard Library
+import math
 import os
-import signal
+import pathlib
+import pickle
+import subprocess
+import threading
+import sys
+import uuid
 
+# Third Party Libraries
+import redis
 
-
-# TODO:
-#  - make notes / examples about closures that won't work,
-#    bound methods that won't work, etc. with processes
-#  - explain the consequences of reimport of the functions.
-#  - make notes about the pickling stuff that takes place
-#    and maybe some examples of what can be pickled and what can't.
-#  - use pickletools to see what's going on in pickle files?
-#    too bad jsonpickle doesn't cut it (identity not preserved to
-#    begin with).
-
-# TODO: make asyncified functions automatically (lazily) support promises
-#       arguments ?
-#       So that the composition of async function can be "normal"-ish (?)
-# TODO: "flag" the asyncified functions with an attribute.
-#       Make an "is_async" function that checks that.
-
-
-# Asyncify
-# ------------------------------------------------------------------------------
-class Promise:
-    def __init__(self, queue, process):
-        self._queue = queue
-        self._process = process
-
-    def __call__(self):
-        if hasattr(self, "_error"):
-            if self._error is not None:
-                raise self._error
-            else:
-                return self._value
-        else:
-            self._value, self._error = self._queue.get()
-            self._process.join()
-            return self()
-
-    def __del__(self):
-        pid = self._process.pid
-        try:
-            os.kill(pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-
-
-def return_or_raise_in_queue(function, args, kwargs, queue):
-    try:
-        value = function(*args, **kwargs)
-        error = None
-    except KeyboardInterrupt:
-        value = None
-        error = None
-    except Exception as e:
-        value = None
-        error = e
-    queue.put((value, error))
-
-class asyncify:
-    def __init__(self, function):
-        self._function = function
-
-    def __call__(self, *args, **kwargs):
-        queue = mp.Queue()
-        target_args = (self._function, args, kwargs, queue)
-        process = mp.Process(target=return_or_raise_in_queue, args=target_args)
-        process.start()
-        return Promise(queue, process)
-
-
+# About this process
 # ------------------------------------------------------------------------------
 
 
-# Picklable & Parallelizable Iterator Helpers
-class StepIterator:
-    def __init__(self, it, step, offset):
-        # For multiple step iterators to work **in the same process**
-        # the iterable must be re-iterable (e.g. range(n) is).
-        # But the step iterator itself is not. (It should be though ...)
-        self.it = it
-        self.iterator = iter(it)
-        # print("*", list(iter(it)))
-        self.step = step
-        self.offset = offset
-        self.counter = 0
+# Utility constants & functions
+# ------------------------------------------------------------------------------
+TIMEOUT_MAX = threading.TIMEOUT_MAX
 
-    def __repr__(self):
-        return f"StepIterator({self.it}, step={self.step}, offset={self.offset})"
 
+# Mailbox
+# ------------------------------------------------------------------------------
+class Channel:
+    def __init__(self, mailbox, filter):
+        self._mailbox = mailbox
+        self._filter = filter
     def __iter__(self):
         return self
-
     def __next__(self):
-        while self.counter % self.step != self.offset:
-            self.counter += 1
-            next(self.iterator)
-        self.counter += 1
-        return next(self.iterator)
-
-
-def split_iterator(it, n=2):
-    return [StepIterator(it, step=n, offset=i) for i in range(n)]
-
-
-# Compute Pi
-# ------------------------------------------------------------------------------
-
-from fractions import Fraction
-
-
-### Ah that's slow but nicely parallelizable, exactly what I like :)
-def compute_pi(n):
-    return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in range(n))
-
-
-### Prepare compute_pi first: generalize to accept iterators
-def compute_pi(n):
-    if isinstance(n, int):
-        it = range(n)
-    else:
-        it = n
-    return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in it)
-
-
-def compute_pi(n, parallel=False):
-    if isinstance(n, int):
-        it = range(n)
-    else:
-        it = n
-    if not parallel:
-        return 4 * sum(Fraction((-1) ** k, 2 * k + 1) for k in it)
-    if parallel is True:
-        parallel = os.cpu_count()
-    else:
-        parallel = int(parallel)
-
-    iterators = split_iterator(it, parallel)
-    partials = [asyncify(compute_pi)(it, parallel=False) for it in iterators]
-    return sum(partial() for partial in partials)
-
-
-# Actors
-# ------------------------------------------------------------------------------
-def actor(cls, args, kwargs, queue):
-    self = cls(*args, **kwargs)
-    while True:
-        method_name, args, kwargs, answer_queue = queue.get()
-        answer = getattr(self, method_name)(*args, **kwargs)
-        answer_queue.put(answer)
-
-
-class Method:
-    def __init__(self, name, proxy):
-        self._name = name
-        self._proxy = proxy
-
-    def __call__(self, *args, **kwargs):
-        return self._proxy._call_method((self._name, args, kwargs))
-
-
-class Proxy:
-    def __init__(self, cls):
-        self._cls = cls
-
-    def __call__(self, *args, **kwargs):
-        self._queue = mp.Queue()
-        mp.Process(target=actor, args=(self._cls, args, kwargs, self._queue)).start()
-        return self
-
-    def __getattr__(self, name):
-        return Method(name, self)
-
-    def _call_method(self, name, args, kwargs):
-        queue = mp.Queue()
-        self._queue.put((name, args, kwargs, queue))
-        return Promise(queue)
-
-
-def actorify(cls):
-    return Proxy(cls)  # Mmm this need to be a class. Mmmm.
-
-
-# Crypto
-# ------------------------------------------------------------------------------
-import numpy as np
-import hashlib
-
-
-def proof_of_work(data, level=1):
-    # A 2**64 space is plenty; in any case, we'll never get to the end
-    # since even an empty loop over that many values takes centuries.
-    for i in range(2**64):
-        key = np.uint64(i).tobytes()
-        if check_proof_of_work(data, key, level):
-            return key
-
-
-def check_proof_of_work(data, key, level=1):
-    digest = hashlib.sha256(data + key).digest()
-    return digest.startswith(b"\x00" * level)
-
-# TODO: get the first of promise that yields, del the others.
-#       How do we do that? We need an extra "construct" where
-#       we make everyone return in the same queue, and then
-#       get the queue. So we need to wrap every stuff in another
-#       layer of processes. This is a select-like construct IMHO.
-
-# TODO: first of Promises that yields. Complicated because of our API choice :(
-# AFAICT, we need to dwelve back into the Process API, we can't just use our
-# abstraction. Or maybe it's simpler with the Actor paradgim(?)
-
-
-# NOTA: in this scheme, we are not CANCELLING the other processes ;
-#       They are still running in the background until completion.
-# Conclusion: the "run all" stuff can be nicely abstracted on top of
-# the "asyncify" decorator. But the "yield first" not so much unless
-# we tweak the design, with shared return value and cancellation.
-#
-# Add a common "promise" target is easy in the current design,
-# but the cancellation is not. And if the return value is a common
-# promise, and not individual promises, then the problem is even
-# more severe, since we cannot pass let's say process ids to get
-# tasks killed. OTHERWISE, it would be a good idea to have a promise
-# carry a "kill" switch ("renounce"? "relnquish"? "give_up"?).
-#
-# Yeah, maybe we should have that to start with. And then make a select
-# on top of that. BUT, if the process killed had subprocesses, then what's
-# going on? Unless it explicity handles "kill" (HUP?) signals, it will
-# just die and leave the subprocesses running ...
-# def return_in_queue(promise, queue):
-#     queue.put(promise())
-
-
-# def yield_first(promises):
-#     queue = mp.Queue()
-#     for promise in promises:
-#         mp.Process(target=return_in_queue, args=(promise, queue)).start()
-#     return Promise(queue)
-
-
-# TODO: split_range would be nice here (with many options of course)
-
-
-# Simple version of parallel proof of work that goes around the limitations
-# of the current design. It's not very nice, but it works.
-def proof_of_work(data, level=1, parallel=False, _range=None):
-    if _range is None:
-        _range = range(2**64)
-    if not parallel:
-        for i in _range:
-            key = np.uint64(i).tobytes()
-            if check_proof_of_work(data, key, level):
-                return key
+        self._mailbox.get_messages(block=False)
+        for i, message in enumerate(self._mailbox._messages):
+            if self._filter(message):
+                return self._mailbox._messages.pop(i)
         else:
-            return None
-
-    if parallel is True:
-        parallel = os.cpu_count()
-    else:
-        parallel = int(parallel)
-
-    N = 2**20
-    assert _range == range(2**64)
-    workers = []
-    current_range = range(0)
-    while True:
-        while len(workers) < parallel:
-            start = current_range.stop
-            stop = start + N
-            current_range = range(start, stop)
-            workers.append(
-                asyncify(proof_of_work)(
-                    data, level, parallel=False, _range=current_range
-                )
-            )
-        if (key := workers.pop(0)()) != None:
-            return key
+            while True:
+                self._mailbox.get_messages(block=True)
+                new_message = self._mailbox._messages[-1]
+                if self._filter(new_message):
+                    return self._mailbox._messages.pop(-1)
+    def __repr__(self):
+        self._mailbox.get_messages(block=False)
+        return repr([m for m in self._mailbox._messages if self._filter(m)])
 
 
-# TODO: parallelize that
+class Mailbox:
+    def __init__(self, r):
+        self._r = r
+        self._pubsub = r.pubsub()
+        self._messages = [] 
+        self._inbox = Channel(self, lambda message: True)
+        pid = os.getpid()
+        if __name__ == "__main__":
+            name = pathlib.Path(__file__).stem
+        else:
+            name = __name__
+        self.id = f"{name}.{pid}"
+        self._pubsub.subscribe(self.id)
+        _ = next(self[self._subscribe_ack])
+    def _subscribe_ack(self, message):
+        return (
+            message["type"] == "subscribe" and 
+            message["channel"] == self.id.encode("ascii")
+            ) 
+    def __getitem__(self, filter):
+        return Channel(self, filter)
+    def __iter__(self):
+        return iter(self._inbox)
+    def __next__(self):
+        return next(self._inbox)
+    def __repr__(self):
+        return repr(self._inbox)
+    def get_messages(self, block=False):
+        while message := self._pubsub.get_message(timeout=0.0):
+            self._messages.append(message)
+        if block:
+            message = self._pubsub.get_message(timeout=TIMEOUT_MAX)
+            assert message is not None, "Timeout"
+            self._messages.append(message)
+    def send(self, *args, **kwargs):
+        self._r.publish(*args, **kwargs)
 
+
+# Redis init
 # ------------------------------------------------------------------------------
+r = redis.Redis()
+mailbox = Mailbox(r)
+
+class Promise:
+    def __init__(self, channel):
+        self._channel = channel
+    def __call__(self):
+        # ISSUE! # need to be channel-specific!
+        message = mailbox.get(lambda message: message["channel"] == self._channel)
+        log(message)
+        result = pickle.loads(message["data"])
+        return result
+
+def asyncify(function):
+    def wrapped_function(self, *args, **kwargs):
+        answer_channel = uuid.uuid4().hex
+        r.pubsub().subscribe(answer_channel)
+        
+        # TODO: deal with subscription ACK
+        ack_sub = mailbox.get(lambda message: message["channel"] == answer_channel)
+        print(ack_sub)
+
+        subprocess.Popen([sys.executable, "worker.py", pid])
+        message = p.get_message(timeout=TIMEOUT_MAX) # get the worker handle
+        worker = message["data"]
+        # Send the payload to the worker
+        payload = pickle.dumps((function, args, kwargs))
+        r.publish(worker, payload)
+        return Promise(answer_channel)
+    return wrapped_function
 
 
-def grok_promises(f):
-    def lazy_f(*args, **kwargs):
-        args = [arg.get() if hasattr(arg, "get") else arg for arg in args]
-        kwargs = {k: v.get() if hasattr(v, "get") else v for k, v in kwargs.items()}
-        return f(*args, **kwargs)
-
-    return lazy_f
-
-
-# Now, we can make some stuff "lazy"
-
-
-def lazy(f):
-    return asyncify(grok_promises(f))
-
-
-# TODO:
-#   - ressource analysis at each step (here: memory & cpu)
-#   - make a simple process-based ressource logger?
-#   - other "classic" concurrent & distributed schemes.
-#   - abstract some remote stuff from multiprocessing (urk, probably not)
-
-# TODO:
-#   - Actors (ie "subject") aka long-running processes you discuss with.
-#   - Use proxy / rpc-like approach (abstraction on top of queues?)
-
-if __name__ == "__main__":
-    doctest.testmod()
