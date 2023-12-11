@@ -1,21 +1,25 @@
 Redis
 ================================================================================
 
+<https://redis.io/>
+
+> The open source, in-memory data store used by millions of developers 
+> as a database, cache, streaming engine, and message broker. 
+
+## Quickstart
+
 ```bash session
 $ conda create --name redis
 ...
 $ conda activate redis
-$ conda install python redis-server redis-py
+$ conda install redis-server  # Install Redis server and CLI
 ...
 ```
 
 
 ```bash session
 $ redis-server
-60817:C 31 Jul 2023 15:33:14.698 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
-60817:C 31 Jul 2023 15:33:14.698 # Redis version=5.0.3, bits=64, commit=00000000, modified=0, pid=60817, just started
-60817:C 31 Jul 2023 15:33:14.698 # Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf
-60817:M 31 Jul 2023 15:33:14.699 * Increased maximum number of open files to 10032 (it was originally set to 1024).
+...
                 _._                                                  
            _.-``__ ''-._                                             
       _.-``    `.  `_.  ''-._           Redis 5.0.3 (00000000/0) 64 bit
@@ -59,34 +63,121 @@ $ redis-cli GET message
 "Hello world!"
 ```
 
---------------------------------------------------------------------------------
+## Public redis server
+
+### Bind to IP address
+
+Bind Redis server to your public network address instead of localhost.
+
+```bash session
+$ ifconfig -a
+wlp111s0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 192.168.1.44  netmask 255.255.255.0  broadcast 192.168.1.255
+        inet6 fe80::d768:d027:9d50:c820  prefixlen 64  scopeid 0x20<link>
+        inet6 2a02:842a:220:6301:5e35:150c:4b5f:f961  prefixlen 64  scopeid 0x0<global>
+        inet6 2a02:842a:220:6301:de1:9b24:1557:f48c  prefixlen 64  scopeid 0x0<global>
+        ether 18:56:80:7c:2e:a5  txqueuelen 1000  (Ethernet)
+        RX packets 566267  bytes 750652878 (750.6 MB)
+        RX errors 0  dropped 57  overruns 0  frame 0
+        TX packets 161147  bytes 31206122 (31.2 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+...
+```
+
+```bash session
+$ touch redis.conf
+$ echo "bind 192.168.1.44" >> redis.conf
+$ echo "protected-mode no" >> redis.conf
+```
+
+```bash session
+$ redis-server redis.conf
+...
+```
+
+```bash session
+$ redis-cli -h 192.168.1.44 PING
+PONG
+```
+
+### Ngrok
+
+Bind to localhost but tunnel localhost to a public address.
+
+```bash session
+$ redis-server 
+...
+```
+
+```bash session
+$ ngrok tcp 6439
+...                                    
+Forwarding tcp://5.tcp.eu.ngrok.io:12498 -> localhost:6379 
+...
+```
+
+```bash session
+$ redis-cli -h 5.tcp.eu.ngrok.io -p 12498 PING
+PONG
+```
+
+## Redis Labs (cloud)
+
+Use an external redis server.
+
+```bash session
+$ redis -h redis-18650.c325.us-east-1-4.ec2.redns.redis-cloud.com -p 18650 
+-a sMvW0CnKQG1A******************** PING
+PONG
+```
+
+## Python
+
+```bash session
+$ conda install redis-py  # Install Redis Python client
+```
 
 ```pycon
 >>> import redis
->>> r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+>>> r = redis.Redis(host="localhost", port=6379)  # or simply r = redis.Redis()
 >>> r.ping()
 True
 ```
 
-```pycon
->>> r.ping()
-Traceback (most recent call last):
-...
-redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused.
-```
+> [!WARNING]
+> If the Redis server is not started `r.ping()` won't return `False`,
+> but will raise an error instead:
+> 
+> ```pycon
+> >>> r.ping()
+> Traceback (most recent call last):
+> ...
+> redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused.
+> ```
+
+
+Redis version of "Hello world!" in Python.
 
 ```pycon
->>> try:
-...     r.ping()
-... except redis.ConnectionError as e:
-...     print(e)
-...
-Error 111 connecting to localhost:6379. Connection refused.
-```
-
-```pycon
->>> r.set("message", "Hello world!")
+>>> r.set("message", b"Hello world!")
 True
 >>> r.get("message")
-'Hello world!'
+b'Hello world!'
 ```
+
+## Publish-Subscribe
+
+## Chat App
+
+## Mail model
+
+## JSON exchange
+
+## Promises
+
+## Remote execution
+
+(cloudpickle, etc.)
+
+## Patterns?
