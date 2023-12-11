@@ -132,7 +132,7 @@ $ redis -h redis-18650.c325.us-east-1-4.ec2.redns.redis-cloud.com -p 18650
 PONG
 ```
 
-## Python
+## Python Client
 
 ```bash session
 $ conda install redis-py  # Install Redis Python client
@@ -186,7 +186,7 @@ So far you have received nothing, that will return `None`.
 
 > [!NOTE]
 > If you have created your pubsub client with `ignore_subscribe_messages=True`
-> (the default), you actually have received a message: the confirmation of your
+> (the default), you received a message which is the confirmation of your
 > subscription:
 >
 > ```pycon
@@ -202,26 +202,66 @@ Send a message on the chat channel
 1
 ```
 
+and read it
+
 ```pycon
 >>> p.get_message()
 {'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
 ```
 
+Now your list of unread messages is empty again:
 
-
->>> 
-
-
-```
->>> p.get_message()
-{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
->>> p.get_message()
-{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
->>> p.get_message()
+```pycon
 >>> p.get_message()
 ```
+
+Note that you won't receive any message that was sent to a channel prior to
+your subscription:
+
+```pycon
+>>> r.publish("another chat", "First message")
+>>> p.subscribe("another chat")
+>>> r.publish("another chat", "Second message")
+>>> p.get_message()
+{'type': 'message', 'pattern': None, 'channel': b'another chat', 'data': b'Second message'}
+```
+
+You also won't receive the same message twice ... or maybe at all if you are
+temporarily disconnected from the Redis server.
 
 ## Chat App
+
+Simple chat writer:
+```python
+import redis
+r = redis.Redis()
+
+name = input("Enter your nickname:" )
+while True:
+    message = input("> ")
+    data = f"{name}: {message}"
+    r.publish("chat", data)  # ℹ️ 'data' is automatically utf-8 encoded.
+```
+
+Simple chat reader:
+
+```python
+import time
+import redis
+
+r = redis.Redis()
+p = r.pubsub(ignore_subscribe_messages=True)
+p.subscribe("chat")
+
+while True:
+    m = p.get_message()
+    if m is None:
+        time.sleep(0.1) # Avoid the CPU churn
+        break
+    else:
+        data = m["data"]
+        print(data.decode("utf-8"))
+```
 
 ## Mail model
 
