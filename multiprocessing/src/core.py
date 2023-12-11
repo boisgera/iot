@@ -1,12 +1,11 @@
 # Python Standard Library
-import math
 import os
 import pathlib
-import pickle
+import cloudpickle as pickle
 import subprocess
 import threading
-import sys
 import uuid
+import sys
 
 # Third Party Libraries
 import redis
@@ -85,34 +84,31 @@ class Mailbox:
 # Redis init
 # ------------------------------------------------------------------------------
 r = redis.Redis()
-mailbox = Mailbox(r)
+mailbox = Mailbox(r) # Question: do we want the mailbox to be sendable?
+                     # Or instead, explicitly non-sendable and unique to
+                     # each process? (probably the latter, which is what
+                     # is achieved here AFAICT)
 
 class Promise:
-    def __init__(self, channel):
-        self._channel = channel
+    def __init__(self, id):
+        self._id = id
+    def from_subprocess(self, message):
+        return message["data"].startswith(self._id)
     def __call__(self):
-        # ISSUE! # need to be channel-specific!
-        message = mailbox.get(lambda message: message["channel"] == self._channel)
-        log(message)
-        result = pickle.loads(message["data"])
-        return result
+        message = next(mailbox[self.from_subprocess])
+        n = len(self._id)
+        return pickle.loads(message["data"][n:]) 
 
 def asyncify(function):
-    def wrapped_function(self, *args, **kwargs):
-        answer_channel = uuid.uuid4().hex
-        r.pubsub().subscribe(answer_channel)
-        
-        # TODO: deal with subscription ACK
-        ack_sub = mailbox.get(lambda message: message["channel"] == answer_channel)
-        print(ack_sub)
-
-        subprocess.Popen([sys.executable, "worker.py", pid])
-        message = p.get_message(timeout=TIMEOUT_MAX) # get the worker handle
-        worker = message["data"]
-        # Send the payload to the worker
-        payload = pickle.dumps((function, args, kwargs))
-        r.publish(worker, payload)
-        return Promise(answer_channel)
+    def wrapped_function(*args, **kwargs):
+        worker = subprocess.Popen(
+            [sys.executable, "worker.py", mailbox.id],  
+            stdout=subprocess.PIPE
+        )
+        worker_id = next(worker.stdout).strip()
+        message = (function, args, kwargs)
+        mailbox.send(worker_id, pickle.dumps(message))
+        return Promise(worker_id)
     return wrapped_function
 
 

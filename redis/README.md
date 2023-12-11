@@ -5,7 +5,7 @@ Redis
 $ conda create --name redis
 ...
 $ conda activate redis
-$ conda install redis python redis-py
+$ conda install python redis-server redis-py
 ...
 ```
 
@@ -90,35 +90,3 @@ True
 >>> r.get("message")
 'Hello world!'
 ```
-
-Start Redis in Python
---------------------------------------------------------------------------------
-
-
-```bash session
-$ conda install -c conda-forge plumbum psutil
-```
-
-```pycon
->>> from plumbum import local, BG
->>> import psutil
->>> redis_server = local["redis_server"]
->>> redis_server & BG
-<Future ... (running)>
-```
-``` pycon
->>> procs_info = [p.info for p in psutil.process_iter(attrs=["name", "pid", "status"]) if p.info["name"] == "redis-server"]
->>> assert len(procs_info) == 1
->>> redis_server_info = procs_info[0]
->>> redis_server_info
-{'name': 'redis-server', 'status': 'sleeping', 'pid': 65063}
-```
-
-**TODO.** multiprocessing, subprocess. Arf, no, multiprocessin won't work here.
-
-Channels
---------------------------------------------------------------------------------
-
---------------------------------------------------------------------------------
-
-**TODO:** allow remote access with `bind 0.0.0.0` in conf file.
