@@ -168,6 +168,59 @@ b'Hello world!'
 
 ## Publish-Subscribe
 
+Create a pubsub object, subscribe to the "chat" channel.
+
+```pycon
+>>> import redis
+>>> r = redis.Redis()
+>>> p = r.pubsub(ignore_subscribe_messages=True)
+>>> p.subscribe("chat")
+```
+
+Ask for the oldest message send to all of you subscription -- if any. 
+So far you have received nothing, that will return `None`.
+
+```pycon
+>>> p.get_message()
+```
+
+> [!NOTE]
+> If you have created your pubsub client with `ignore_subscribe_messages=True`
+> (the default), you actually have received a message: the confirmation of your
+> subscription:
+>
+> ```pycon
+> >>> p = r.pubsub()
+> >>> p.get_message()
+> {'type': 'subscribe', 'pattern': None, 'channel': b'chat', 'data': 1}
+> ```
+
+Send a message on the chat channel
+
+```pycon
+>>> r.publish("chat", b"Hello chat!")  # Return the number of "chat" subscribers
+1
+```
+
+```pycon
+>>> p.get_message()
+{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
+```
+
+
+
+>>> 
+
+
+```
+>>> p.get_message()
+{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
+>>> p.get_message()
+{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
+>>> p.get_message()
+>>> p.get_message()
+```
+
 ## Chat App
 
 ## Mail model
