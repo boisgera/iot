@@ -232,11 +232,12 @@ temporarily disconnected from the Redis server.
 ## Chat App
 
 Simple chat writer:
+
 ```python
 import redis
 r = redis.Redis()
 
-name = input("Enter your nickname:" )
+name = input("Enter your nickname: " )
 while True:
     message = input("> ")
     data = f"{name}: {message}"
@@ -254,23 +255,83 @@ p = r.pubsub(ignore_subscribe_messages=True)
 p.subscribe("chat")
 
 while True:
+    time.sleep(0.1) # Avoid the CPU churn
     m = p.get_message()
-    if m is None:
-        time.sleep(0.1) # Avoid the CPU churn
-        break
-    else:
+    if m is not None:
         data = m["data"]
         print(data.decode("utf-8"))
 ```
 
-## Mail model
+Better chat reader:
 
-## JSON exchange
+```python
+import redis
+import threading
 
-## Promises
+TIMEOUT = 10.0
 
-## Remote execution
+r = redis.Redis()
+p = r.pubsub(ignore_subscribe_messages=True)
+p.subscribe("chat")
 
-(cloudpickle, etc.)
+while True:
+    m = p.get_message(timeout=TIMEOUT)
+    if m is None:
+        continue
+    data = m["data"]
+    print(data.decode("utf-8"))
+```
 
-## Patterns?
+## Structured data
+
+Let's transmit our name and message to the server and let him format 
+the message as he wishes.
+
+Writer:
+
+```python
+import json
+import redis
+
+r = redis.Redis()
+
+name = input("Enter your nickname: " )
+while True:
+    message = input("> ")
+    data = {"name": name, "message": message}
+    binary = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    r.publish("chat", binary)
+```
+
+Reader:
+
+```python
+import json
+import redis
+
+TIMEOUT = 10.0
+
+r = redis.Redis()
+p = r.pubsub(ignore_subscribe_messages=True)
+p.subscribe("chat")
+
+while True:
+    m = p.get_message(timeout=TIMEOUT)
+    if m is None:
+        continue
+    binary = m["data"]
+    data = json.loads(binary.decode("utf-8"))
+    name = data["name"]
+    message = data["message"]
+    print(f"{name}: {message}")
+```
+
+## Actor model
+
+i.e. one pubsub channel by process (???). Inbox?
+
+## Subprocesses (spawn actors)
+
+Specialized vs generic workers?
+
+
