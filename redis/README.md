@@ -173,27 +173,24 @@ Create a pubsub object, subscribe to the "chat" channel.
 ```pycon
 >>> import redis
 >>> r = redis.Redis()
->>> p = r.pubsub(ignore_subscribe_messages=True)
+>>> p = r.pubsub()
 >>> p.subscribe("chat")
 ```
 
-Ask for the oldest message send to all of you subscription -- if any. 
-So far you have received nothing, that will return `None`.
+Wait a little for the subscription to be registered ... then check your
+messages. You have received a confirmation!
+
+```pycon
+>>> p.get_message()
+{'type': 'subscribe', 'pattern': None, 'channel': b'chat', 'data': 1}
+```
+
+Now, since noone has published anything on the `chat` channel yet,
+any subsequent attemps to read a message will return `None`.
 
 ```pycon
 >>> p.get_message()
 ```
-
-> [!NOTE]
-> If you have created your pubsub client with `ignore_subscribe_messages=True`
-> (the default), you received a message which is the confirmation of your
-> subscription:
->
-> ```pycon
-> >>> p = r.pubsub()
-> >>> p.get_message()
-> {'type': 'subscribe', 'pattern': None, 'channel': b'chat', 'data': 1}
-> ```
 
 Send a message on the chat channel
 
@@ -202,7 +199,7 @@ Send a message on the chat channel
 1
 ```
 
-and read it
+(wait a little) and read it
 
 ```pycon
 >>> p.get_message()
@@ -251,8 +248,11 @@ import time
 import redis
 
 r = redis.Redis()
-p = r.pubsub(ignore_subscribe_messages=True)
+p = r.pubsub()
 p.subscribe("chat")
+time.sleep(0.1) # let redis process the registration
+m = p.get_message()
+assert m["type"] == "subscribe"
 
 while True:
     time.sleep(0.1) # Avoid the CPU churn
@@ -262,7 +262,7 @@ while True:
         print(data.decode("utf-8"))
 ```
 
-Better chat reader:
+Better chat reader with blocking message read:
 
 ```python
 import redis
@@ -271,8 +271,13 @@ import threading
 TIMEOUT = 10.0
 
 r = redis.Redis()
-p = r.pubsub(ignore_subscribe_messages=True)
+p = r.pubsub()
 p.subscribe("chat")
+while True:
+    m = p.get_message(timeout=TIMEOUT)
+    if m is None:
+        continue
+    assert m["type"] == "subscribe"
 
 while True:
     m = p.get_message(timeout=TIMEOUT)
@@ -312,8 +317,13 @@ import redis
 TIMEOUT = 10.0
 
 r = redis.Redis()
-p = r.pubsub(ignore_subscribe_messages=True)
+p = r.pubsub()
 p.subscribe("chat")
+while True:
+    m = p.get_message(timeout=TIMEOUT)
+    if m is None:
+        continue
+    assert m["type"] == "subscribe"
 
 while True:
     m = p.get_message(timeout=TIMEOUT)
@@ -326,12 +336,159 @@ while True:
     print(f"{name}: {message}")
 ```
 
-## Actor model
+## Mailbox
 
-i.e. one pubsub channel by process (???). Inbox?
+`inbox.py`:
+
+**TODO:** get rid of this, too advanced at this stage. Just concept of "one
+mailbox by process/actor".
+```python
+import math
+import os
+import platform
+import redis
+
+TIMEOUT = 1.0
+
+r = redis.Redis()
+p = r.pubsub()
+name = platform.node()
+p.subscribe(name)
+while True:
+    m = p.get_message(timeout=TIMEOUT)
+    if m is None:
+        continue
+    assert m["type"] == "subscribe"
+
+messages = []
+
+def fetch_messages(n=None):
+    if n is None:
+        while True:
+            m = p.get_message()
+            if m is None:
+                break
+            messages.append(m["data"])
+    else:
+        while n > 0:
+            m = p.get_message(timeout=TIMEOUT)
+            if m is None:
+                continue
+            else:
+                n = n-1
+                messages.append(m["data"])
+
+def get(condition=lambda x: True):
+    fetch_messages()
+    for i, message in enumerate(messages):
+        if condition(message):
+            return messages.pop(i)
+    while True:
+        fetch_messages(n=1)
+        message = messages[-1]
+        if condition(message):
+            return messages.pop()
+```
+
+**TODO:** implement DM between people! with reply_to adress, etc.
 
 ## Subprocesses (spawn actors)
 
-Specialized vs generic workers?
+Progressions:
+
+  - specialized (one-feature, then many-methods) to generic workers
+
+  - short-lived to long-lived (mmm maybe not necessary?)
 
 
+`clock.py`:
+
+```python
+from datetime import datetime 
+import json
+import os
+import redis
+
+FOREVER = 60.0 * 60 * 24 * 365
+
+r = redis.Redis()
+p = r.pubsub()
+
+p.subscribe(os.getpid())
+m = p.get_message(timeout=FOREVER)
+assert m is not None and m["type"] == "subscribe"
+
+def get_current_time():
+    now = datetime.now()
+    return {"hour": now.hour, "minute": now.minute, "second": now.second}
+
+while True:
+    m = p.get_message(timeout=FOREVER)
+    assert m is not None
+    current_time = get_current_time()
+    binary = m["data"]
+    data = json.loads(binary.decode("utf-8"))
+    reply_to = data["reply-to"]
+    r.publish(reply_to, json.dumps(current_time).encode("utf-8"))
+```
+
+```python
+import json
+import platform
+import redis
+import sys
+import subprocess
+import time
+
+FOREVER = 60.0 * 60 * 24 * 365
+
+r = redis.Redis()
+p = r.pubsub()
+p.subscribe(platform.node())
+m = p.get_message(timeout=FOREVER)
+assert m is not None and m["type"] == "subscribe"
+
+clock = subprocess.Popen([sys.executable, "clock.py"])
+time.sleep(0.1) # make sure that the subprocess has time to register to its own 
+# inbox. A more foolproof mechanism (broadcast a "ready" somewhere? But where?) 
+# would be nice. I'd really like not to use stdout/stdin to communicate between
+# processes (that would defeat the purpose!)
+# So maybe the master should pass its own mailbox as a command-line argument.
+# Yeah that's probably for the best: that + an "ACK" message to let the master
+# know that the worker is ready to receive messages.
+
+while True:
+    r.publish(clock.pid, json.dumps({"reply-to": platform.node()}))
+    m = p.get_message(timeout=FOREVER)
+    assert m is not None
+    current_time = json.loads(m["data"].decode("utf-8"))
+    print(current_time)
+    time.sleep(3.0)
+```
+
+**T
+
+**TODO.** Program regular timer? With start/stop?
+
+## Parallelize computations
+
+```python
+import math
+
+import numpy as np
+import numpy.random as npr
+
+
+rs = []
+
+n = 100_000_000
+x = npr.random(n)
+y = npr.random(n)
+
+t = (x*x + y*y <= 1.0)
+
+
+r = 4 * t.mean()
+print(r)
+print(np.abs(r - math.pi))
+```
