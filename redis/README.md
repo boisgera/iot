@@ -17,7 +17,7 @@ $ conda install redis-server  # Install Redis server and CLI
 ```
 
 
-```bash session
+```
 $ redis-server
 ...
                 _._                                                  
@@ -177,8 +177,7 @@ Create a pubsub object, subscribe to the "chat" channel.
 >>> p.subscribe("chat")
 ```
 
-Wait a little for the subscription to be registered ... then check your
-messages. You have received a confirmation!
+Check your messages. You have received the confirmation of your subscription!
 
 ```pycon
 >>> p.get_message()
@@ -199,11 +198,11 @@ Send a message on the chat channel
 1
 ```
 
-(wait a little) and read it
+Then read it
 
 ```pycon
 >>> p.get_message()
-{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello stranger!'}
+{'type': 'message', 'pattern': None, 'channel': b'chat', 'data': b'Hello chat!'}
 ```
 
 Now your list of unread messages is empty again:
@@ -216,9 +215,9 @@ Note that you won't receive any message that was sent to a channel prior to
 your subscription:
 
 ```pycon
->>> r.publish("another chat", "First message")
+>>> r.publish("another chat", b"First message")
 >>> p.subscribe("another chat")
->>> r.publish("another chat", "Second message")
+>>> r.publish("another chat", b"Second message")
 >>> p.get_message()
 {'type': 'message', 'pattern': None, 'channel': b'another chat', 'data': b'Second message'}
 ```
@@ -238,51 +237,27 @@ name = input("Enter your nickname: " )
 while True:
     message = input("> ")
     data = f"{name}: {message}"
-    r.publish("chat", data)  # ℹ️ 'data' is automatically utf-8 encoded.
+    r.publish("chat", data.encode("utf-8"))
 ```
 
-Simple chat reader:
+Chat reader with blocking read:
 
 ```python
-import time
-import redis
-
-r = redis.Redis()
-p = r.pubsub()
-p.subscribe("chat")
-time.sleep(0.1) # let redis process the registration
-m = p.get_message()
-assert m["type"] == "subscribe"
-
-while True:
-    time.sleep(0.1) # Avoid the CPU churn
-    m = p.get_message()
-    if m is not None:
-        data = m["data"]
-        print(data.decode("utf-8"))
-```
-
-Better chat reader with blocking message read:
-
-```python
-import redis
 import threading
 
-TIMEOUT = 10.0
+import redis
+
+FOREVER = threading.TIMEOUT_MAX
 
 r = redis.Redis()
 p = r.pubsub()
+
 p.subscribe("chat")
-while True:
-    m = p.get_message(timeout=TIMEOUT)
-    if m is None:
-        continue
-    assert m["type"] == "subscribe"
+m = p.get_message(timeout=FOREVER)
+assert isinstance(m, dict) and m.get("type") == "subscribe"
 
 while True:
-    m = p.get_message(timeout=TIMEOUT)
-    if m is None:
-        continue
+    m = p.get_message(timeout=FOREVER)
     data = m["data"]
     print(data.decode("utf-8"))
 ```
@@ -296,7 +271,10 @@ Writer:
 
 ```python
 import json
+
 import redis
+
+FOREVER = threading.TIMEOUT_MAX
 
 r = redis.Redis()
 
@@ -312,23 +290,21 @@ Reader:
 
 ```python
 import json
+import threading
+
 import redis
 
-TIMEOUT = 10.0
+FOREVER = threading.TIMEOUT_MAX
 
 r = redis.Redis()
 p = r.pubsub()
+
 p.subscribe("chat")
-while True:
-    m = p.get_message(timeout=TIMEOUT)
-    if m is None:
-        continue
-    assert m["type"] == "subscribe"
+m = p.get_message(timeout=FOREVER)
+assert isinstance(m, dict) and m.get("type") == "subscribe"
 
 while True:
-    m = p.get_message(timeout=TIMEOUT)
-    if m is None:
-        continue
+    m = p.get_message(timeout=FOREVER)
     binary = m["data"]
     data = json.loads(binary.decode("utf-8"))
     name = data["name"]
@@ -340,29 +316,35 @@ while True:
 
 `inbox.py`:
 
-**TODO:** get rid of this, too advanced at this stage. Just concept of "one
-mailbox by process/actor".
 ```python
 import math
 import os
 import platform
+
 import redis
 
 TIMEOUT = 1.0
 
 r = redis.Redis()
 p = r.pubsub()
-name = platform.node()
-p.subscribe(name)
-while True:
-    m = p.get_message(timeout=TIMEOUT)
-    if m is None:
-        continue
-    assert m["type"] == "subscribe"
 
-messages = []
+name = platform.node() + "-" + os.getpid()
+print(f"my inbox name is {name}")
+
+p.subscribe(name)
+m = p.get_message(timeout=FOREVER)
+assert isinstance(m, dict) and m.get("type") == "subscribe"
+
 
 def fetch_messages(n=None):
+    """
+    Load messages
+
+      - fetch_messages() loads all messages readily available.
+
+      - fetch_messages(n) loads exactly n messages (and thus may block)
+    """
+    messages = []
     if n is None:
         while True:
             m = p.get_message()
@@ -371,13 +353,12 @@ def fetch_messages(n=None):
             messages.append(m["data"])
     else:
         while n > 0:
-            m = p.get_message(timeout=TIMEOUT)
-            if m is None:
-                continue
-            else:
-                n = n-1
-                messages.append(m["data"])
+            m = p.get_message(timeout=FOREVER)
+            n = n-1
+            messages.append(m["data"])
+```
 
+``` python
 def get(condition=lambda x: True):
     fetch_messages()
     for i, message in enumerate(messages):
@@ -390,7 +371,14 @@ def get(condition=lambda x: True):
             return messages.pop()
 ```
 
-**TODO:** implement DM between people! with reply_to adress, etc.
+**TODO:** mail reader
+
+**TODO:** implement DMs between people! with reply_to adress, etc.
+
+The content would be reply_to, to, body.
+
+We have fetch_messages, send, reply, reply_all. We do bottom-posting and
+> quoting.
 
 ## Subprocesses (spawn actors)
 
@@ -407,16 +395,18 @@ Progressions:
 from datetime import datetime 
 import json
 import os
+import threading
+
 import redis
 
-FOREVER = 60.0 * 60 * 24 * 365
+FOREVER = threading.TIMEOUT_MAX
 
 r = redis.Redis()
 p = r.pubsub()
 
 p.subscribe(os.getpid())
 m = p.get_message(timeout=FOREVER)
-assert m is not None and m["type"] == "subscribe"
+assert m is not None and m.get("type") == "subscribe"
 
 def get_current_time():
     now = datetime.now()
@@ -424,7 +414,6 @@ def get_current_time():
 
 while True:
     m = p.get_message(timeout=FOREVER)
-    assert m is not None
     current_time = get_current_time()
     binary = m["data"]
     data = json.loads(binary.decode("utf-8"))
@@ -434,19 +423,26 @@ while True:
 
 ```python
 import json
+import os
 import platform
-import redis
 import sys
 import subprocess
+import threading
 import time
 
-FOREVER = 60.0 * 60 * 24 * 365
+import redis
+
+FOREVER = threading.TIMEOUT_MAX
 
 r = redis.Redis()
 p = r.pubsub()
-p.subscribe(platform.node())
+
+name = platform.node() + "-" + os.getpid()
+print(f"my inbox name is {name}")
+
+p.subscribe(name)
 m = p.get_message(timeout=FOREVER)
-assert m is not None and m["type"] == "subscribe"
+assert m is not None and m.get("type") == "subscribe"
 
 clock = subprocess.Popen([sys.executable, "clock.py"])
 time.sleep(0.1) # make sure that the subprocess has time to register to its own 
@@ -460,13 +456,11 @@ time.sleep(0.1) # make sure that the subprocess has time to register to its own
 while True:
     r.publish(clock.pid, json.dumps({"reply-to": platform.node()}))
     m = p.get_message(timeout=FOREVER)
-    assert m is not None
     current_time = json.loads(m["data"].decode("utf-8"))
     print(current_time)
-    time.sleep(3.0)
+    time.sleep(5.0)
 ```
 
-**T
 
 **TODO.** Program regular timer? With start/stop?
 
