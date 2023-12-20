@@ -335,50 +335,87 @@ p.subscribe(name)
 m = p.get_message(timeout=FOREVER)
 assert isinstance(m, dict) and m.get("type") == "subscribe"
 
-
-def fetch_messages(n=None):
-    """
-    Load messages
-
-      - fetch_messages() loads all messages readily available.
-
-      - fetch_messages(n) loads exactly n messages (and thus may block)
-    """
+# TODO: timeout against denial of service
+def get_messages():
     messages = []
-    if n is None:
-        while True:
-            m = p.get_message()
-            if m is None:
-                break
-            messages.append(m["data"])
-    else:
-        while n > 0:
-            m = p.get_message(timeout=FOREVER)
-            n = n-1
-            messages.append(m["data"])
-```
-
-``` python
-def get(condition=lambda x: True):
-    fetch_messages()
-    for i, message in enumerate(messages):
-        if condition(message):
-            return messages.pop(i)
     while True:
-        fetch_messages(n=1)
-        message = messages[-1]
-        if condition(message):
-            return messages.pop()
+        m = p.get_message()
+        if m is None:
+            break
+        messages.append(m["data"])
 ```
 
-**TODO:** mail reader
+**TODO:** Mail payload structure and API
 
-**TODO:** implement DMs between people! with reply_to adress, etc.
+Payload: from, to, cc, subject, body
 
-The content would be reply_to, to, body.
+API:
 
-We have fetch_messages, send, reply, reply_all. We do bottom-posting and
-> quoting.
+  - messages = get_messages()
+
+  - print_message(message)
+
+  - send(message, to)
+  
+  - reply(message_received, message)  (do bottom-posting and quoting)
+  
+  - reply_all(message_received, message)
+
+## Distributed computation
+
+Computation of pi, coming from remote actors.
+
+Payload: number of samples, value. 
+
+Stream of volontary computations received continuously without asking first.
+
+
+File `mc_pi.py`
+```python
+import numpy.random as npr
+
+def mc_pi(n):
+    x = npr.random(n)
+    y = npr.random(n)
+    t = (x*x + y*y <= 1.0)
+    pi_approx = 4 * t.mean()
+    return pi_approx
+```
+
+File `pi_worker.py`
+```python
+import json
+
+import redis
+
+from mc_pi import mc_pi
+
+r = redis.Redis()
+channel = "pi_collector"
+
+def send_pi_approx():
+    n = 100_000_000
+    pi_approx = mc_pi(n)
+    binary_data = json.dumps({"n": n, "pi_approx": pi_approx}).encode("utf-8")
+    r.publish(channel, binary_data)
+```
+
+
+Collector (interactive):
+```python
+import json
+
+import redis
+
+# Start channel
+
+inbox = []
+
+# fct to accumulate messages in inbox
+
+# fct to compute pi and estimate standard deviation / check it.
+
+```
 
 ## Subprocesses (spawn actors)
 
